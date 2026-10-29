@@ -107,18 +107,55 @@ def branch(name):
     open(bpath(name), "w").write(head_commit() or "")
 
 def ancestors(h):
-    s = set()
-    while h:
-        s.add(h); h = get_commit(h)["parent"]
+    s, stack = set(), [h]
+    while stack:
+        x = stack.pop()
+        if x and x not in s:
+            s.add(x)
+            c = get_commit(x)
+            stack += [c["parent"], c.get("merged")]
     return s
 
 def merge(name):
     cur, other = head_commit(), open(bpath(name)).read().strip()
-    if not cur or cur in ancestors(other):      # fast-forward
+    if not other:
+        return print("nothing to merge")
+    if not cur or cur in ancestors(other):          # fast-forward
         open(bpath(current_branch()), "w").write(other)
-        restore(other); print("fast-forward merge done")
+        restore(other)
+        return print("fast-forward merge done")
+    if other in ancestors(cur):
+        return print("already up to date")
+    oa = ancestors(other)                            # find common ancestor
+    base = cur
+    while base and base not in oa:
+        base = get_commit(base)["parent"]
+    bf = get_commit(base)["files"] if base else {}
+    cf, of = get_commit(cur)["files"], get_commit(other)["files"]
+    merged, conflicts = {}, []
+    for f in set(bf) | set(cf) | set(of):
+        b, c, o = bf.get(f), cf.get(f), of.get(f)
+        if c == o or b == o:
+            val = c
+        elif b == c:
+            val = o
+        else:                                        # both changed: conflict
+            conflicts.append(f)
+            ours = load(c).decode(errors="ignore") if c else ""
+            theirs = load(o).decode(errors="ignore") if o else ""
+            val = store(("<<<<<<< " + current_branch() + "\n" + ours +
+                         "\n=======\n" + theirs + "\n>>>>>>> " + name + "\n").encode())
+        if val:
+            merged[f] = val
+    c = {"message": "Merge branch " + name, "timestamp": time.ctime(),
+         "parent": cur, "merged": other, "files": merged}
+    h = store(json.dumps(c).encode())
+    open(bpath(current_branch()), "w").write(h)
+    restore(h)
+    if conflicts:
+        print("merged with conflicts in: " + ", ".join(conflicts))
     else:
-        print("branches diverged: only fast-forward merge is supported")
+        print("merged " + name + " cleanly")
 
 # ---------- CLI ----------
 def main():
